@@ -37,10 +37,9 @@ package com.exacttarget.fuelsdk;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.net.HttpURLConnection;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.List;
+import java.security.AuthProvider;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -68,6 +67,8 @@ public class ETClient {
             "/v1/requestToken";
     private static final String PATH_REQUESTTOKEN_LEGACY =
             "/v1/requestToken?legacy=1";
+    private AuthApiVersion authApiVersion = AuthApiVersion.v1;
+
     private static final String PATH_ENDPOINTS_SOAP =
             "/platform/v1/endpoints/soap";
 
@@ -83,6 +84,7 @@ public class ETClient {
     private String authEndpoint = null;
     private String soapEndpoint = null;
 
+
     private Boolean autoHydrateObjects = true;
 
     private Gson gson = null;
@@ -92,6 +94,7 @@ public class ETClient {
     private ETSoapConnection soapConnection = null;
 
     private String accessToken = null;
+    private String accessType = null;
     private int expiresIn = 0;
     private String legacyToken = null;
     private String refreshToken = null;
@@ -129,6 +132,8 @@ public class ETClient {
         clientId = configuration.get("clientId");
         clientSecret = configuration.get("clientSecret");
 
+        ConfigureAuthApi();
+
         username = configuration.get("username");
         password = configuration.get("password");
 
@@ -136,11 +141,9 @@ public class ETClient {
         if (endpoint == null) {
             endpoint = DEFAULT_ENDPOINT;
         }
-        authEndpoint = configuration.get("authEndpoint");
-        if (authEndpoint == null) {
-            authEndpoint = DEFAULT_AUTH_ENDPOINT;
-        }
+
         soapEndpoint = configuration.get("soapEndpoint");
+
 
         GsonBuilder gsonBuilder = new GsonBuilder()
             .excludeFieldsWithoutExposeAnnotation()
@@ -198,6 +201,34 @@ public class ETClient {
         }
     }
 
+    private void ConfigureAuthApi() {
+
+        accessType = configuration.get("accessType");
+        if (accessType == null){
+            accessType = "online";
+        }
+
+        authEndpoint = configuration.get("authEndpoint");
+        if (authEndpoint == null) {
+            authEndpoint = DEFAULT_AUTH_ENDPOINT;
+        }
+
+
+        AuthApiVersion effectiveApiVersion = AuthApiVersion.v1;
+
+        String authVersion = configuration.get("authApiVersion");
+
+        if (authVersion != null){
+            try {
+                effectiveApiVersion = AuthApiVersion.valueOf(authVersion.trim().toLowerCase());
+            }catch(IllegalArgumentException iae){
+                effectiveApiVersion = AuthApiVersion.v1;
+            }
+        }
+
+        authApiVersion = effectiveApiVersion;
+    }
+
     /**
      * 
      * @return The client ID
@@ -219,7 +250,7 @@ public class ETClient {
      * @return The LegacyToken
      */
     public String getLegacyToken() {
-        return accessToken;
+        return accessToken; //this doesn't look right...
     }
 
     /**
@@ -312,22 +343,11 @@ public class ETClient {
         // we have one:
         //
 
-        JsonObject jsonObject = new JsonObject();
-        jsonObject.addProperty("clientId", clientId);
-        jsonObject.addProperty("clientSecret", clientSecret);
-        jsonObject.addProperty("accessType", (configuration.get("accessType") != null ? configuration.get("accessType") :"online"));
-        if (configuration.get("accessType") != null && configuration.get("accessType").equals("offline") && refreshToken != null){
-        	jsonObject.addProperty("refreshToken", refreshToken);
-        }
-
+        JsonObject jsonObject = authApiVersion.BuildPayload(this);
+        String requestTokenPath = authApiVersion.BuildPath(this);
         String requestPayload = gson.toJson(jsonObject);
 
-        ETRestConnection.Response response = null;
-        if (configuration.isTrue("requestLegacyToken")) {
-            response = authConnection.post(PATH_REQUESTTOKEN_LEGACY, requestPayload);
-        } else {
-            response = authConnection.post(PATH_REQUESTTOKEN, requestPayload);
-        }
+        ETRestConnection.Response response =  authConnection.post(requestTokenPath, requestPayload);
 
         if (response.getResponseCode() != HttpURLConnection.HTTP_OK) {
             throw new ETSdkException("error obtaining access token "
@@ -348,20 +368,8 @@ public class ETClient {
         JsonParser jsonParser = new JsonParser();
         jsonObject = jsonParser.parse(responsePayload).getAsJsonObject();
         logger.debug("received token:");
-        this.accessToken = jsonObject.get("accessToken").getAsString();
-        logger.debug("  accessToken: " + this.accessToken);
-        this.expiresIn = jsonObject.get("expiresIn").getAsInt();
-        logger.debug("  expiresIn: " + this.expiresIn);
-        JsonElement jsonElement = jsonObject.get("legacyToken");
-        if (jsonElement != null) {
-            this.legacyToken = jsonElement.getAsString();
-        }
-        logger.debug("  legacyToken: " + this.legacyToken);
-        if (jsonObject.get("refreshToken") != null){
-        	this.refreshToken = jsonObject.get("refreshToken").getAsString();
-        }
-        
-        logger.debug("  refreshToken: " + this.refreshToken);
+
+        authApiVersion.HandleResponse(jsonObject, this);
 
         //
         // Calculate the token expiration time. As before,
@@ -979,5 +987,128 @@ public class ETClient {
         }
 
         return response;
+    }
+
+    private enum AuthApiVersion{
+        v1 {
+            @Override
+            String BuildPath(ETClient client) {
+                if (client.getConfiguration().isTrue("requestLegacyToken")){
+                    return PATH_REQUESTTOKEN_LEGACY;
+                }
+                return PATH_REQUESTTOKEN;
+            }
+            @Override
+            JsonObject BuildPayload(ETClient client){
+                JsonObject jsonObject = new JsonObject();
+
+                jsonObject.addProperty("clientId", client.clientId);
+                jsonObject.addProperty("clientSecret", client.clientSecret);
+                jsonObject.addProperty("accessType", client.accessType);
+                if (client.accessType.equals("offline") && client.refreshToken != null){
+                    jsonObject.addProperty("refreshToken", client.refreshToken);
+                }
+                return jsonObject;
+            }
+
+            void HandleResponse(JsonObject jsonObject, ETClient client) {
+                client.accessToken = jsonObject.get("accessToken").getAsString();
+                logger.debug("  accessToken: " + client.accessToken);
+                client.expiresIn = jsonObject.get("expiresIn").getAsInt();
+                logger.debug("  expiresIn: " + client.expiresIn);
+                JsonElement jsonElement = jsonObject.get("legacyToken");
+                if (jsonElement != null) {
+                    client.legacyToken = jsonElement.getAsString();
+                }
+                logger.debug("  legacyToken: " + client.legacyToken);
+                if (jsonObject.get("refreshToken") != null) {
+                    client.refreshToken = jsonObject.get("refreshToken").getAsString();
+                }
+            }
+        },
+        v2 {
+            @Override
+            String BuildPath(ETClient client) {
+                StringBuilder path = new StringBuilder("/v2/requestToken");
+                Properties properties = new Properties();
+
+                String accountId = client.getConfiguration().get("account_id");
+                if (accountId != null) {
+                    properties.setProperty("account_id", accountId);
+                }
+
+                if (client.getConfiguration().isTrue("requestLegacyToken")) {
+                    properties.setProperty("legacy", "1");
+                }
+
+                String delimiter = "?";
+                Set<Map.Entry<Object, Object>> entries = properties.entrySet();
+                for (Map.Entry<Object, Object> property : entries) {
+
+                    path.append(delimiter);
+                    path.append(String.format("%s=%s", property.getKey(), property.getValue()));
+                    delimiter = "&";
+                }
+
+                return path.toString();
+            }
+            @Override
+            JsonObject BuildPayload(ETClient client){
+                JsonObject jsonObject = new JsonObject();
+
+                jsonObject.addProperty("client_id", client.clientId);
+                jsonObject.addProperty("client_secret", client.clientSecret);
+
+                String grantType = client.getConfiguration().get("grant_type");
+                if (grantType == null){
+                    grantType = "client_credentials";
+                }
+
+                jsonObject.addProperty("grant_type", grantType);
+
+                jsonObject.addProperty("access_type", client.accessType);
+                if (client.accessType.equals("offline") && client.refreshToken != null){
+                    jsonObject.addProperty("refresh_token", client.refreshToken);
+                }
+
+                return jsonObject;
+            }
+
+            @Override
+            void HandleResponse(JsonObject jsonObject, ETClient client) {
+
+                client.accessToken = jsonObject.get("access_token").getAsString();
+                logger.debug("  access_token: " + client.accessToken);
+
+                client.expiresIn = jsonObject.get("expires_in").getAsInt();
+                logger.debug("  expires_in: " + client.expiresIn);
+
+                JsonElement jsonElement = jsonObject.get("legacy_token");
+                if (jsonElement != null) {
+                    client.legacyToken = jsonElement.getAsString();
+                }
+                logger.debug("  legacy_token: " + client.legacyToken);
+
+                if (jsonObject.get("refresh_token") != null) {
+                    client.refreshToken = jsonObject.get("refresh_token").getAsString();
+                }
+
+                client.endpoint = jsonObject.get("rest_instance_url").getAsString();
+
+                if (jsonObject.get("auth_instance_url") != null){
+                    client.authEndpoint = jsonObject.get("auth_instance_url").getAsString();
+                }
+
+                if (jsonObject.get("soap_instance_url") != null){
+                    client.soapEndpoint = jsonObject.get("soap_instance_url").getAsString();
+                }
+            }
+        };
+
+        abstract String BuildPath(ETClient client);
+
+        abstract JsonObject BuildPayload(ETClient client);
+
+        abstract void HandleResponse(JsonObject jsonObject, ETClient client);
     }
 }
