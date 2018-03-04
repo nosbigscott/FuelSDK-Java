@@ -2,3 +2,5 @@ clientId=xxxxxxx
 clientSecret=###########################
 authEndpoint=https://auth.exacttargetapis.com
 dataExtensionFolderId=
+authApiVersion=v1
+account_id=########
