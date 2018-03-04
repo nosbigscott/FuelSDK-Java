@@ -12,6 +12,28 @@
 #
 
 #
+# Set authApiVersion to specify which version of the auth API to use.
+#
+# optional
+# default: v1
+# acceptable values (case sensitive): v1 or v2
+#
+#authApiVersion=
+
+#
+# Set account_id to request account specific tokens for a hub/app
+# exchange app when using v2 authApiVersion.
+#
+# This property is ignored when using v1 authApiVersion
+#
+# The package tied to the clientId and clientSecret must be
+# installed in the account
+#
+
+#account_id=
+
+
+#
 # OAuth client credentials (obtained from App Center at [1]):
 #
 # [1] https://appcenter.exacttarget.com
